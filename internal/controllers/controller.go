@@ -1,9 +1,12 @@
 package controllers
 
 import (
+	"errors"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"net/http"
+	"split-the-bill/internal/common"
 	"split-the-bill/internal/models"
 	"strconv"
 	"time"
@@ -81,30 +84,91 @@ func ListParticipants(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-func AddExpense(db *gorm.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var expense models.Expense
-		if err := c.ShouldBindJSON(&expense); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+type ShareInput struct {
+	UserID      uint    `json:"user_id"`
+	ShareAmount float64 `json:"share_amount"`
+}
+
+type CreateExpenseInput struct {
+	Title  string       `json:"title"`
+	Amount float64      `json:"amount"`
+	PaidBy uint         `json:"paid_by"`
+	PaidAt *time.Time   `json:"paid_at"`
+	Shares []ShareInput `json:"shares"`
+}
+
+func AddExpense(c *gin.Context, db *gorm.DB) {
+	eventID := c.Param("id")
+	fmt.Print(eventID)
+	var input CreateExpenseInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var totalShares float64
+	for _, share := range input.Shares {
+		totalShares += share.ShareAmount
+	}
+	if totalShares != input.Amount {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Сумма долей не совпадает с общей суммой"})
+		return
+	}
+
+	expense := models.Expense{
+		EventID: common.ParseUintParam(eventID),
+		Title:   input.Title,
+		Amount:  input.Amount,
+		PaidBy:  input.PaidBy,
+		PaidAt:  time.Now(),
+	}
+
+	if input.PaidAt != nil {
+		expense.PaidAt = *input.PaidAt
+	}
+
+	if err := db.Create(&expense).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при создании траты"})
+		return
+	}
+
+	for _, s := range input.Shares {
+		share := models.ExpenseShare{
+			ExpenseID:   expense.ID,
+			UserID:      s.UserID,
+			ShareAmount: s.ShareAmount,
+		}
+		db.Create(&share)
+	}
+
+	for _, s := range input.Shares {
+		if s.UserID == input.PaidBy || s.ShareAmount == 0 {
+			continue
+		}
+
+		var existingDebt models.Debt
+		err := db.Where("event_id = ? AND from_user = ? AND to_user = ? AND is_settled = false",
+			expense.EventID, s.UserID, input.PaidBy).
+			First(&existingDebt).Error
+
+		if err == nil {
+			existingDebt.Amount += s.ShareAmount
+			db.Save(&existingDebt)
+		} else if errors.Is(err, gorm.ErrRecordNotFound) {
+			newDebt := models.Debt{
+				EventID:  expense.EventID,
+				FromUser: s.UserID,
+				ToUser:   input.PaidBy,
+				Amount:   s.ShareAmount,
+			}
+			db.Create(&newDebt)
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при работе с долгами"})
 			return
 		}
-		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		expense.EventID = uint(id)
-		if expense.PaidAt.IsZero() {
-			expense.PaidAt = time.Now()
-		}
-		db.Create(&expense)
-
-		var shares []models.ExpenseShare
-		if err := c.ShouldBindJSON(&shares); err == nil {
-			for i := range shares {
-				shares[i].ExpenseID = expense.ID
-			}
-			db.Create(&shares)
-		}
-
-		c.JSON(http.StatusOK, expense)
 	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Трата добавлена", "expense_id": expense.ID})
 }
 
 func ListExpenses(db *gorm.DB) gin.HandlerFunc {
@@ -172,19 +236,68 @@ func GetDebts(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-func RecordPayment(db *gorm.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var payment models.Payment
-		if err := c.ShouldBindJSON(&payment); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		payment.EventID = uint(id)
-		payment.PaidAt = time.Now()
-		db.Create(&payment)
-		c.JSON(http.StatusOK, payment)
+func AddPayment(c *gin.Context, db *gorm.DB) {
+	var input models.Payment
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var totalDebt float64
+		if err := tx.Model(&models.Debt{}).
+			Where("event_id = ? AND from_user = ? AND to_user = ? AND is_settled = false",
+				input.EventID, input.FromUser, input.ToUser).
+			Select("COALESCE(SUM(amount), 0)").Scan(&totalDebt).Error; err != nil {
+			return err
+		}
+
+		if input.Amount > totalDebt {
+			return fmt.Errorf("сумма оплаты превышает текущий долг (%.2f)", totalDebt)
+		}
+
+		if err := tx.Create(&input).Error; err != nil {
+			return err
+		}
+
+		remaining := input.Amount
+
+		var debts []models.Debt
+		if err := tx.Where("event_id = ? AND from_user = ? AND to_user = ? AND is_settled = false",
+			input.EventID, input.FromUser, input.ToUser).
+			Order("id").
+			Find(&debts).Error; err != nil {
+			return err
+		}
+
+		for _, debt := range debts {
+			if remaining <= 0 {
+				break
+			}
+
+			if remaining >= debt.Amount {
+				remaining -= debt.Amount
+				debt.Amount = 0
+				debt.IsSettled = true
+			} else {
+				debt.Amount -= remaining
+				remaining = 0
+			}
+
+			if err := tx.Save(&debt).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Платёж успешно добавлен и долги обновлены"})
 }
 
 func ListPayments(db *gorm.DB) gin.HandlerFunc {

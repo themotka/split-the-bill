@@ -15,7 +15,9 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	r.POST("/events/:id/participants", controllers.AddParticipant(db))
 	r.GET("/events/:id/participants", controllers.ListParticipants(db))
 
-	r.POST("/events/:id/expenses", controllers.AddExpense(db))
+	r.POST("/events/:id/expenses", func(c *gin.Context) {
+		controllers.AddExpense(c, db)
+	})
 	r.GET("/events/:id/expenses", controllers.ListExpenses(db))
 	r.PUT("/expenses/:id", controllers.UpdateExpense(db))
 	r.DELETE("/expenses/:id", controllers.DeleteExpense(db))
@@ -23,6 +25,8 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 	r.GET("/events/:id/summary", controllers.GetEventSummary(db))
 
 	r.GET("/events/:id/debts", controllers.GetDebts(db))
-	r.POST("/events/:id/payments", controllers.RecordPayment(db))
+	r.POST("/events/:id/payments", func(c *gin.Context) {
+		controllers.AddPayment(c, db)
+	})
 	r.GET("/events/:id/payments", controllers.ListPayments(db))
 }
