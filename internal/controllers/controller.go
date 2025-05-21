@@ -146,24 +146,56 @@ func AddExpense(c *gin.Context, db *gorm.DB) {
 			continue
 		}
 
-		var existingDebt models.Debt
+		fromID := s.UserID
+		toID := input.PaidBy
+		amount := s.ShareAmount
+
+		var reverseDebt models.Debt
 		err := db.Where("event_id = ? AND from_user = ? AND to_user = ? AND is_settled = false",
-			expense.EventID, s.UserID, input.PaidBy).
-			First(&existingDebt).Error
+			expense.EventID, toID, fromID).First(&reverseDebt).Error
 
 		if err == nil {
-			existingDebt.Amount += s.ShareAmount
-			db.Save(&existingDebt)
-		} else if errors.Is(err, gorm.ErrRecordNotFound) {
-			newDebt := models.Debt{
-				EventID:  expense.EventID,
-				FromUser: s.UserID,
-				ToUser:   input.PaidBy,
-				Amount:   s.ShareAmount,
+			if reverseDebt.Amount > amount {
+				reverseDebt.Amount -= amount
+				db.Save(&reverseDebt)
+			} else if reverseDebt.Amount < amount {
+				db.Delete(&reverseDebt)
+
+				newAmount := amount - reverseDebt.Amount
+				newDebt := models.Debt{
+					EventID:  expense.EventID,
+					FromUser: fromID,
+					ToUser:   toID,
+					Amount:   newAmount,
+				}
+				db.Create(&newDebt)
+			} else {
+				db.Delete(&reverseDebt)
 			}
-			db.Create(&newDebt)
+
+		} else if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Нет обратного — ищем прямой
+			var existingDebt models.Debt
+			err := db.Where("event_id = ? AND from_user = ? AND to_user = ? AND is_settled = false",
+				expense.EventID, fromID, toID).First(&existingDebt).Error
+
+			if err == nil {
+				existingDebt.Amount += amount
+				db.Save(&existingDebt)
+			} else if errors.Is(err, gorm.ErrRecordNotFound) {
+				newDebt := models.Debt{
+					EventID:  expense.EventID,
+					FromUser: fromID,
+					ToUser:   toID,
+					Amount:   amount,
+				}
+				db.Create(&newDebt)
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при поиске долга"})
+				return
+			}
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при работе с долгами"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при поиске обратного долга"})
 			return
 		}
 	}
