@@ -12,6 +12,18 @@ import (
 	"time"
 )
 
+func GetUserID(c *gin.Context) (uint, error) {
+	userIDRaw, exists := c.Get("user_id")
+	if !exists {
+		return 0, fmt.Errorf("user_id not found in context")
+	}
+	userID, ok := userIDRaw.(uint)
+	if !ok {
+		return 0, fmt.Errorf("invalid user_id type in context")
+	}
+	return userID, nil
+}
+
 func CreateUser(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var user models.User
@@ -34,21 +46,30 @@ func ListUsers(db *gorm.DB) gin.HandlerFunc {
 
 func CreateEvent(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		userID, err := GetUserID(c)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
 		var event models.Event
 		if err := c.ShouldBindJSON(&event); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		db.Create(&event)
-		c.JSON(http.StatusOK, event)
-		var p models.EventParticipant
-
-		p.UserID = event.CreatedBy
-		p.EventID = event.ID
+		event.CreatedBy = userID
+		if err := db.Create(&event).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при создании события"})
+			return
+		}
+		p := models.EventParticipant{
+			UserID:  userID,
+			EventID: event.ID,
+		}
 		db.Create(&p)
+
+		c.JSON(http.StatusOK, event)
 	}
 }
-
 func GetEvent(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
@@ -269,13 +290,21 @@ func GetDebts(db *gorm.DB) gin.HandlerFunc {
 }
 
 func AddPayment(c *gin.Context, db *gorm.DB) {
+	userID, err := GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
 	var input models.Payment
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	err := db.Transaction(func(tx *gorm.DB) error {
+	input.FromUser = userID
+
+	err = db.Transaction(func(tx *gorm.DB) error {
 		var totalDebt float64
 		if err := tx.Model(&models.Debt{}).
 			Where("event_id = ? AND from_user = ? AND to_user = ? AND is_settled = false",
@@ -293,12 +322,10 @@ func AddPayment(c *gin.Context, db *gorm.DB) {
 		}
 
 		remaining := input.Amount
-
 		var debts []models.Debt
 		if err := tx.Where("event_id = ? AND from_user = ? AND to_user = ? AND is_settled = false",
 			input.EventID, input.FromUser, input.ToUser).
-			Order("id").
-			Find(&debts).Error; err != nil {
+			Order("id").Find(&debts).Error; err != nil {
 			return err
 		}
 
@@ -338,5 +365,37 @@ func ListPayments(db *gorm.DB) gin.HandlerFunc {
 		var payments []models.Payment
 		db.Where("event_id = ?", eventID).Find(&payments)
 		c.JSON(http.StatusOK, payments)
+	}
+}
+
+func UpdateUserName(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := GetUserID(c)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+
+		var input struct {
+			Name string `json:"name" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Name is required"})
+			return
+		}
+
+		var user models.User
+		if err := db.First(&user, userID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+
+		user.Name = input.Name
+		if err := db.Save(&user).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user name"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Name updated successfully", "user": user})
 	}
 }

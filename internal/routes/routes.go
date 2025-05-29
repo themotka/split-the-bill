@@ -6,7 +6,7 @@ import (
 	"split-the-bill/internal/controllers"
 )
 
-func SetupRoutes(r *gin.Engine, db *gorm.DB) {
+func SetupRoutes(r *gin.RouterGroup, db *gorm.DB) {
 	r.POST("/users", controllers.CreateUser(db))
 	r.GET("/users", controllers.ListUsers(db))
 
@@ -29,4 +29,5 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB) {
 		controllers.AddPayment(c, db)
 	})
 	r.GET("/events/:id/payments", controllers.ListPayments(db))
+	r.POST("/name", controllers.UpdateUserName(db))
 }

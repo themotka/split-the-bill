@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"split-the-bill/internal/config"
+	"split-the-bill/internal/middleware"
 	"split-the-bill/internal/routes"
 
 	"github.com/gin-gonic/gin"
@@ -10,6 +13,16 @@ import (
 func main() {
 	db := config.InitDB()
 	r := gin.Default()
-	routes.SetupRoutes(r, db)
-	r.Run(":8080")
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+
+	authorized := r.Group("/")
+	authorized.Use(middleware.AuthMiddleware(jwtSecret, db))
+
+	routes.SetupRoutes(authorized, db)
+	err := r.Run(":8080")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 }
