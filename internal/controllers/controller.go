@@ -12,6 +12,19 @@ import (
 	"time"
 )
 
+type ShareInput struct {
+	UserID      uint    `json:"user_id"`
+	ShareAmount float64 `json:"share_amount"`
+}
+
+type CreateExpenseInput struct {
+	Title  string       `json:"title"`
+	Amount float64      `json:"amount"`
+	PaidBy uint         `json:"paid_by"`
+	PaidAt *time.Time   `json:"paid_at"`
+	Shares []ShareInput `json:"shares"`
+}
+
 func GetUserID(c *gin.Context) (uint, error) {
 	userIDRaw, exists := c.Get("user_id")
 	if !exists {
@@ -70,15 +83,26 @@ func CreateEvent(db *gorm.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, event)
 	}
 }
-func GetEvent(db *gorm.DB) gin.HandlerFunc {
+func GetEvents(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id := c.Param("id")
-		var event models.Event
-		if err := db.First(&event, id).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
+		userIDVal, exists := c.Get("user_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in context"})
 			return
 		}
-		c.JSON(http.StatusOK, event)
+		userID := userIDVal.(uint)
+
+		var events []models.Event
+		err := db.Joins("JOIN event_participants ON event_participants.event_id = events.id").
+			Where("event_participants.user_id = ?", userID).
+			Find(&events).Error
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch events"})
+			return
+		}
+
+		c.JSON(http.StatusOK, events)
 	}
 }
 
@@ -103,19 +127,6 @@ func ListParticipants(db *gorm.DB) gin.HandlerFunc {
 		db.Where("event_id = ?", eventID).Find(&participants)
 		c.JSON(http.StatusOK, participants)
 	}
-}
-
-type ShareInput struct {
-	UserID      uint    `json:"user_id"`
-	ShareAmount float64 `json:"share_amount"`
-}
-
-type CreateExpenseInput struct {
-	Title  string       `json:"title"`
-	Amount float64      `json:"amount"`
-	PaidBy uint         `json:"paid_by"`
-	PaidAt *time.Time   `json:"paid_at"`
-	Shares []ShareInput `json:"shares"`
 }
 
 func AddExpense(c *gin.Context, db *gorm.DB) {

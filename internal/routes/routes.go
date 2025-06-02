@@ -11,7 +11,7 @@ func SetupRoutes(r *gin.RouterGroup, db *gorm.DB) {
 	r.GET("/users", controllers.ListUsers(db))
 
 	r.POST("/events", controllers.CreateEvent(db))
-	r.GET("/events/:id", controllers.GetEvent(db))
+	r.GET("/events", controllers.GetEvents(db))
 	r.POST("/events/:id/participants", controllers.AddParticipant(db))
 	r.GET("/events/:id/participants", controllers.ListParticipants(db))
 
