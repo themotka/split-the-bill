@@ -1,11 +1,14 @@
 package controllers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"log/slog"
 	"net/http"
+	"split-the-bill/internal/clients"
 	"split-the-bill/internal/common"
 	"split-the-bill/internal/models"
 	"strconv"
@@ -23,6 +26,11 @@ type CreateExpenseInput struct {
 	PaidBy uint         `json:"paid_by"`
 	PaidAt *time.Time   `json:"paid_at"`
 	Shares []ShareInput `json:"shares"`
+}
+
+type SSORequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 func GetUserID(c *gin.Context) (uint, error) {
@@ -46,6 +54,54 @@ func CreateUser(db *gorm.DB) gin.HandlerFunc {
 		}
 		db.Create(&user)
 		c.JSON(http.StatusOK, user)
+	}
+}
+
+func LoginHandler(client *clients.Client, log *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		const op = "handler.Login"
+		var req SSORequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			log.Error(fmt.Sprintf("%s: %s", op, err.Error()))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		resp, err := client.Login(ctx, req.Email, req.Password)
+		if err != nil {
+			log.Error(fmt.Sprintf("%s: %s", op, err.Error()))
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"token": resp.JwtToken})
+	}
+}
+
+func RegisterHandler(client *clients.Client, log *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		const op = "handler.Register"
+		var req SSORequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			log.Error(fmt.Sprintf("%s: %s", op, err.Error()))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		_, err := client.Register(ctx, req.Email, req.Password)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			log.Error(fmt.Sprintf("%s: %s", op, err.Error()))
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "registration successful"})
 	}
 }
 

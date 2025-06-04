@@ -6,17 +6,19 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"split-the-bill/internal/models"
 	"strings"
 )
 
-func AuthMiddleware(secret string, db *gorm.DB) gin.HandlerFunc {
+func AuthMiddleware(secret string, db *gorm.DB, log *slog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing or invalid Authorization header"})
+			log.Error("Missing or invalid Authorization header")
 			c.Abort()
 			return
 		}
@@ -24,6 +26,7 @@ func AuthMiddleware(secret string, db *gorm.DB) gin.HandlerFunc {
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				log.Error("Unexpected signing method")
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
 			return []byte(secret), nil
@@ -31,6 +34,7 @@ func AuthMiddleware(secret string, db *gorm.DB) gin.HandlerFunc {
 
 		if err != nil || !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			log.Error("Invalid token")
 			c.Abort()
 			return
 		}
@@ -38,6 +42,7 @@ func AuthMiddleware(secret string, db *gorm.DB) gin.HandlerFunc {
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid claims"})
+			log.Error("Invalid claims")
 			c.Abort()
 			return
 		}
@@ -45,6 +50,7 @@ func AuthMiddleware(secret string, db *gorm.DB) gin.HandlerFunc {
 		uidFloat, ok := claims["uid"].(float64)
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "UID missing or invalid"})
+			log.Error("UID missing or invalid")
 			c.Abort()
 			return
 		}
@@ -71,6 +77,7 @@ func AuthMiddleware(secret string, db *gorm.DB) gin.HandlerFunc {
 			}
 			if err := db.Create(&user).Error; err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+				log.Error("Failed to create user")
 				c.Abort()
 				return
 			}
