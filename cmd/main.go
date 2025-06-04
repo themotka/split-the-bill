@@ -1,17 +1,13 @@
 package main
 
 import (
-	"context"
+	"github.com/gin-gonic/gin"
 	"log/slog"
 	"os"
-	"split-the-bill/internal/clients"
 	"split-the-bill/internal/config"
 	"split-the-bill/internal/controllers"
 	"split-the-bill/internal/middleware"
 	"split-the-bill/internal/routes"
-	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 func main() {
@@ -21,27 +17,20 @@ func main() {
 	log := setupLogger()
 
 	jwtSecret := os.Getenv("JWT_SECRET")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	ssoClient, err := clients.New(ctx, log,
-		"127.0.0.1:5433",
-		5,
-		2)
-
-	if err != nil {
-		log.Error("Error creating sso client")
+	if jwtSecret == "" {
+		log.Error("JWT_SECRET is not set")
 		os.Exit(1)
 	}
 
-	r.POST("/login", controllers.LoginHandler(ssoClient, log))
-	r.POST("/register", controllers.RegisterHandler(ssoClient, log))
+	r.POST("/login", controllers.LoginHandler(db, jwtSecret))
+	r.POST("/register", controllers.RegisterHandler(db, jwtSecret))
 
 	authorized := r.Group("/")
 
 	authorized.Use(middleware.AuthMiddleware(jwtSecret, db, log))
 
 	routes.SetupRoutes(authorized, db)
-	err = r.Run(":8080")
+	err := r.Run(":8080")
 	if err != nil {
 		log.Error("Error starting server")
 		os.Exit(1)
