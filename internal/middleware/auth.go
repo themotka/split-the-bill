@@ -15,6 +15,7 @@ func AuthMiddleware(secret string, db *gorm.DB, log *slog.Logger) gin.HandlerFun
 		authHeader := c.GetHeader("Authorization")
 		if !strings.HasPrefix(authHeader, "Bearer ") {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing or invalid Authorization header"})
+			log.Error("Missing or invalid Authorization header", c.Params)
 			c.Abort()
 			return
 		}
@@ -30,6 +31,7 @@ func AuthMiddleware(secret string, db *gorm.DB, log *slog.Logger) gin.HandlerFun
 
 		if err != nil || !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			log.Error("invalid token")
 			c.Abort()
 			return
 		}
@@ -37,6 +39,7 @@ func AuthMiddleware(secret string, db *gorm.DB, log *slog.Logger) gin.HandlerFun
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok || claims["uid"] == nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
+			log.Error("invalid claims")
 			c.Abort()
 			return
 		}

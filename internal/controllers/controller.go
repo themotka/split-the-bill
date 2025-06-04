@@ -190,18 +190,52 @@ func GetEvents(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+type AddParticipantRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
 func AddParticipant(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var p models.EventParticipant
-		if err := c.ShouldBindJSON(&p); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		eventID := c.Param("id")
+		var req AddParticipantRequest
+
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 			return
 		}
-		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		p.EventID = uint(id)
-		db.Create(&p)
-		c.JSON(http.StatusOK, p)
+
+		// Найти пользователя по email
+		var user models.User
+		if err := db.Where("email = ?", req.Email).First(&user).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+
+		// Проверить, существует ли уже связь
+		var existing models.EventParticipant
+		if err := db.Where("event_id = ? AND user_id = ?", eventID, user.ID).First(&existing).Error; err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "user already a participant"})
+			return
+		}
+
+		// Добавить участника
+		participant := models.EventParticipant{
+			EventID: parseUint(eventID),
+			UserID:  user.ID,
+		}
+
+		if err := db.Create(&participant).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add participant"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "participant added"})
 	}
+}
+
+func parseUint(s string) uint {
+	id, _ := strconv.ParseUint(s, 10, 64)
+	return uint(id)
 }
 
 func ListParticipants(db *gorm.DB) gin.HandlerFunc {
