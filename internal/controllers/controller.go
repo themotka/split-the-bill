@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 	"net/http"
 	"split-the-bill/internal/common"
@@ -23,6 +25,11 @@ type CreateExpenseInput struct {
 	PaidBy uint         `json:"paid_by"`
 	PaidAt *time.Time   `json:"paid_at"`
 	Shares []ShareInput `json:"shares"`
+}
+
+type SSORequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 func GetUserID(c *gin.Context) (uint, error) {
@@ -46,6 +53,82 @@ func CreateUser(db *gorm.DB) gin.HandlerFunc {
 		}
 		db.Create(&user)
 		c.JSON(http.StatusOK, user)
+	}
+}
+
+func LoginHandler(db *gorm.DB, jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Email    string `json:"email" binding:"required,email"`
+			Password string `json:"password" binding:"required"`
+		}
+
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
+			return
+		}
+
+		var user models.User
+		if err := db.Where("email = ?", req.Email).First(&user).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
+			return
+		}
+
+		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
+			return
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"uid": user.ID,
+			"exp": time.Now().Add(24 * time.Hour).Unix(),
+		})
+
+		tokenString, err := token.SignedString([]byte(jwtSecret))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"token": tokenString})
+	}
+}
+func RegisterHandler(db *gorm.DB, jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Email    string `json:"email" binding:"required,email"`
+			Password string `json:"password" binding:"required"`
+		}
+
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
+			return
+		}
+
+		var existing models.User
+		if err := db.Where("email = ?", req.Email).First(&existing).Error; err == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "user already exists"})
+			return
+		}
+
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+			return
+		}
+
+		email := req.Email
+		user := models.User{
+			Email:    &email,
+			Password: string(hashedPassword),
+		}
+
+		if err := db.Create(&user).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "registration successful"})
 	}
 }
 
@@ -83,6 +166,7 @@ func CreateEvent(db *gorm.DB) gin.HandlerFunc {
 		c.JSON(http.StatusOK, event)
 	}
 }
+
 func GetEvents(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userIDVal, exists := c.Get("user_id")
@@ -106,18 +190,52 @@ func GetEvents(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+type AddParticipantRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
 func AddParticipant(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var p models.EventParticipant
-		if err := c.ShouldBindJSON(&p); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		eventID := c.Param("id")
+		var req AddParticipantRequest
+
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 			return
 		}
-		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-		p.EventID = uint(id)
-		db.Create(&p)
-		c.JSON(http.StatusOK, p)
+
+		// Найти пользователя по email
+		var user models.User
+		if err := db.Where("email = ?", req.Email).First(&user).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+
+		// Проверить, существует ли уже связь
+		var existing models.EventParticipant
+		if err := db.Where("event_id = ? AND user_id = ?", eventID, user.ID).First(&existing).Error; err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "user already a participant"})
+			return
+		}
+
+		// Добавить участника
+		participant := models.EventParticipant{
+			EventID: parseUint(eventID),
+			UserID:  user.ID,
+		}
+
+		if err := db.Create(&participant).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add participant"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "participant added"})
 	}
+}
+
+func parseUint(s string) uint {
+	id, _ := strconv.ParseUint(s, 10, 64)
+	return uint(id)
 }
 
 func ListParticipants(db *gorm.DB) gin.HandlerFunc {

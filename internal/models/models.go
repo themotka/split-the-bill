@@ -8,6 +8,7 @@ type User struct {
 	AvatarURL *string   `json:"avatar_url"`
 	Email     *string   `gorm:"unique"`
 	CreatedAt time.Time `json:"created_at"`
+	Password  string    `json:"-"`
 }
 
 type Event struct {
