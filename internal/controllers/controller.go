@@ -247,6 +247,25 @@ func ListParticipants(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+func GetUserByEmail(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		email := c.Query("email")
+
+		if email == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+			return
+		}
+
+		var user models.User
+		if err := db.Where("email = ?", email).First(&user).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+
+		c.JSON(http.StatusOK, user)
+	}
+}
+
 func AddExpense(c *gin.Context, db *gorm.DB) {
 	eventID := c.Param("id")
 	fmt.Print(eventID)

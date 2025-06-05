@@ -30,4 +30,5 @@ func SetupRoutes(r *gin.RouterGroup, db *gorm.DB) {
 	})
 	r.GET("/events/:id/payments", controllers.ListPayments(db))
 	r.POST("/name", controllers.UpdateUserName(db))
+	r.GET("/user", controllers.GetUserByEmail(db))
 }
