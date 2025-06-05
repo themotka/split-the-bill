@@ -39,6 +39,7 @@ func main() {
 	authorized := r.Group("/")
 
 	authorized.Use(middleware.AuthMiddleware(jwtSecret, db, log))
+	authorized.Use(middleware.RequestLogger())
 
 	routes.SetupRoutes(authorized, db)
 	err := r.Run(":8080")
